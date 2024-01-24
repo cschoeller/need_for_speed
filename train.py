@@ -9,6 +9,7 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.utils.data as data
 from torch.cuda.amp import GradScaler
+from torch.profiler import profile, record_function, ProfilerActivity
 
 from utils import prepare_val_folder, load_dataset, count_parameters, save_model, func_timer
 from convnext import ConvNext
@@ -31,6 +32,7 @@ class Params():
     prefetch_factor = 4
 
     torch_compile = True
+    inf_batch_size = 1
     mixed_precision = True
 
     artifacts_path = "./artifacts"
@@ -115,7 +117,18 @@ def measure_training(model, params):
 
 
 def evaluate_inference(model, params):
-    pass
+    model.cuda()
+    model.eval()
+    input_1 = torch.rand(size=(params.inf_batch_size, 3, 224, 224), device="cuda")
+    model(input_1)
+
+    input_2 = torch.rand(size=(params.inf_batch_size, 3, 224, 224), device="cuda")
+    with profile(activities=[
+        ProfilerActivity.CPU, ProfilerActivity.CUDA], with_stack=True) as prof:
+        with record_function("model_inference"):
+                model(input_2)
+
+    print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
 
 
 def main():
@@ -130,7 +143,7 @@ def main():
     
     # parepare model
     model = ConvNext(img_size=224, num_classes=200, channels=(64, 96, 128, 256))
-    print(f"Number of model parameters: {count_parameters(model)}")
+    print(f"Number of model parameters: {count_parameters(model)/10e6:.2f} mil")
 
     #NOTE: We export before compilation to avoid errors. My guess is that Trition is generating
     # custom symbols and JIT compiled kernels that are not compatiable with the ONNX opset.
@@ -140,9 +153,9 @@ def main():
     # jit optimization for faster inference with torch (inductor) backend
     if params.torch_compile:
         model = torch.compile(model, dynamic=True)
-
+       
     # train model and measure time
-    measure_training(model, params)
+    #measure_training(model, params)
 
     # evaluate inference runtime
     evaluate_inference(model, params)

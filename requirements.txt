@@ -58,6 +58,8 @@ multidict==6.0.4
     # via
     #   aiohttp
     #   yarl
+netron==7.3.9
+    # via -r requirements.in
 networkx==3.2.1
     # via torch
 numpy==1.26.2

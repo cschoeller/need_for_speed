@@ -15,6 +15,8 @@ class CXBlock(nn.Module):
             nn.LayerNorm([4 * dim, h, w]),
             nn.Conv2d(4 * dim, 4 * dim, kernel_size=1, padding='same'),
             nn.GELU(approximate='tanh'),
+            #nn.ReLU(),
+            #nn.Hardswish(),
             nn.Conv2d(4 * dim, dim, kernel_size=1, padding='same'),
         ]
         self.net = nn.Sequential(*layers)
