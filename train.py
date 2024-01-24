@@ -22,7 +22,7 @@ torch.set_float32_matmul_precision('high')
 
 @dataclass
 class Params():
-    epochs = 1 #30
+    epochs = 30
     lr = 0.0003
     train_batch_size = 128
     val_batch_size = 32
@@ -155,7 +155,7 @@ def main():
         model = torch.compile(model, dynamic=True)
        
     # train model and measure time
-    #measure_training(model, params)
+    measure_training(model, params)
 
     # evaluate inference runtime
     evaluate_inference(model, params)
