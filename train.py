@@ -15,8 +15,7 @@ from utils import prepare_val_folder, load_dataset, count_parameters, save_model
 from convnext import ConvNext
 
 
-
-# enable use of gpu tensor cores (onyl relevant in double precision)
+# enable use of gpu tensor cores (only relevant in double precision)
 torch.set_float32_matmul_precision('high')
 
 
@@ -43,6 +42,7 @@ def count_correct_preds(y_pred, y_true):
     pred_indices = y_pred.max(1, keepdim=True)[1]    
     count_correct = pred_indices.eq(y_true.view_as(pred_indices)).sum().double()
     return count_correct
+
 
 @func_timer
 def evaluate(model, val_data, params):
@@ -129,6 +129,7 @@ def evaluate_inference(model, params):
                 model(input_2)
 
     print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
+    prof.export_chrome_trace(str(params.artifacts_path / "trace.json"))
 
 
 def main():
@@ -143,9 +144,9 @@ def main():
     
     # parepare model
     model = ConvNext(img_size=224, num_classes=200, channels=(64, 96, 128, 256))
-    print(f"Number of model parameters: {count_parameters(model)/10e6:.2f} mil")
+    print(f"Number of model parameters: {count_parameters(model)/10e5:.2f} mil")
 
-    #NOTE: We export before compilation to avoid errors. My guess is that Trition is generating
+    # NOTE: We export before compilation to avoid errors. My guess is that Trition is generating
     # custom symbols and JIT compiled kernels that are not compatiable with the ONNX opset.
     # Exporting with dynamo_export probably only optimizes the graph in a ONNX-compatible way.
     export_onnx_graph(model, params)

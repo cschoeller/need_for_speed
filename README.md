@@ -27,9 +27,32 @@ We used for all training runs a batch size of 128 and images with an upsampled r
 
 TC = torch.compile, AMP = Automatic Mixed Precision
 
-## Inference
+## Inference (PyTorch)
 
 Besides picking an efficient format and inference engine, for inference evaluation it is important to be able to visualize the operations the model performs and evaluate their runtime. For this we export the model in training mode and with torch dynamo optimizations to onnx. The exported onnx files under `artifacts` can be visualized with the command `netron artifacts/<model-name>.onnx`.
+
+At first we compare possible improvements while staying only in the PyTorch world. We test replacing the model's [GeLU](https://pytorch.org/docs/stable/generated/torch.nn.GELU.html) activations that contain an expensive transcendental exp, with a similar but more efficient [HardSwish](https://pytorch.org/docs/stable/generated/torch.nn.Hardswish.html).
+
+| Changes | Time BS 64 | Time BS 1 | Val Accuracy |
+| -------- | -------- | -------- | -------- |
+| Vanilla | 60.8 ms | 14.11 ms | 46.53 % |
+| TC | 57.31 | 5.44 | 46.16 % |
+| HardSwish | 61.63 | 13.62 | 44.32 % |
+| TC + HardSwish| 54.31 | 5.26 | 43.84 % |
+
+TC = torch.compile, BS = Batch Size
+
+Relu: 0.4632
+TC + Relu: 0.4651
+
+FastSwish:
+Time per train epoch: 258.7733
+<evaluate> run time: 10.0130 s
+Classification accuracy 0.436
+Self CPU time total: 16.110ms
+Self CUDA time total: 6.449ms
+
+## Inference (TensorRT)
 
 
 # Installation Instructions
@@ -44,13 +67,7 @@ pip install -r requirements.txt
 ```
 
 
-# Plan
-- torch.compile
-- mixed precision training
-- torch profile for exact forward evaluation and flame chart
-- Gelu Approximation
-- fuse layers with trition jit
+# Next Steps
 
 - Inference with TensorRT
 - Quantization / QAT
-- Print out operator chart over onnx
