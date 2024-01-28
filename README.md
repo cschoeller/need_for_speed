@@ -48,9 +48,16 @@ TC + Relu: 0.4651
 FastSwish:
 Time per train epoch: 258.7733
 <evaluate> run time: 10.0130 s
-Classification accuracy 0.436
+Classification accuracy 0.4414
 Self CPU time total: 16.110ms
 Self CUDA time total: 6.449ms
+
+Swish:
+Time per train epoch: 108.4999
+<evaluate> run time: 27.1783 s
+Classification accuracy 0.4537
+Self CPU time total: 4.821ms
+Self CUDA time total: 758.000us
 
 ## Inference (TensorRT)
 

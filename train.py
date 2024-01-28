@@ -153,7 +153,8 @@ def main():
 
     # jit optimization for faster inference with torch (inductor) backend
     if params.torch_compile:
-        model = torch.compile(model, dynamic=True)
+        # NOTE:  Using cudagraphs lets PyTorch execute multiple kernels via one CPU submit.
+        model = torch.compile(model, dynamic=True)#, options={"triton.cudagraphs": True})
        
     # train model and measure time
     measure_training(model, params)

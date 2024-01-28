@@ -1,11 +1,100 @@
 import torch
 import torch.nn as nn
 
+#from torch.onnx import register_custom_op_symbolic
+#import onnxscript
 
 def to_pair(x):
     if type(x) == tuple:
         return x
     return (x,x)
+
+
+
+
+
+
+
+
+# custom_opset = onnxscript.values.Opset(domain="onnx-script", version=1)
+
+# @onnxscript.script(custom_opset)
+# def Selu(X):
+#     alpha = 1.67326  # auto wrapped as Constants
+#     gamma = 1.0507
+#     alphaX = op.CastLike(alpha, X)
+#     gammaX = op.CastLike(gamma, X)
+#     neg = gammaX * (alphaX * op.Exp(X) - alphaX)
+#     pos = gammaX * X
+#     zero = op.CastLike(0, X)
+#     return op.Where(X <= zero, neg, pos)
+
+# # setType API provides shape/type to ONNX shape/type inference
+# def fastswishop(g: jit_utils.GraphContext, X):
+#     return g.onnxscript_op(Selu, X).setType(X.type())
+
+# # Register custom symbolic function
+# # There are three opset version needed to be aligned
+# # This is (2) the opset version in registry
+# torch.onnx.register_custom_op_symbolic(
+#     symbolic_name="aten::fastswish",
+#     symbolic_fn=fastswishop,
+#     opset_version=opset_version,
+# )
+
+
+
+
+
+
+
+class fastswish_grad(torch.autograd.Function):
+
+    _ALPHA = 3.230769230769231
+    _BETA = _ALPHA + 3.
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._ALPHA = 3.230769230769231
+        self._BETA = self._ALPHA + 3.
+
+    @staticmethod
+    def forward(ctx, x):
+        ctx.save_for_backward(x)
+        y = x * (x + fastswish_grad._ALPHA)/ fastswish_grad._BETA
+        y[x > 3.] = x[x > 3.]
+        y[x < -3.] = -1./x[x < -3.]**2
+        return y
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        x, = ctx.saved_tensors
+        y = (2.*x + fastswish_grad._ALPHA)/fastswish_grad._BETA
+        y[x > 3.] = 1.
+        y[x < -3.] = 2./x[x < -3.]**3
+        grad_input = grad_output * y
+        return grad_input
+
+
+class FastSwishCustomGrad(nn.Module):
+    """
+    Custom grad computation reduces inflated memory footprint back to
+    20% over autograd version.
+    But it is incompatible with torch dynamo, i.e., torch.compile doesn't result
+    in a static graph. And as this version also isn't composed of basic graphable
+    operations, it cannot be easily converted to ONNX without a symbolic op. The
+    conversion results in an error.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+    
+    def forward(self, x: torch.Tensor):
+        # fix amp issues
+        if x.dtype == torch.float16:
+           x = x.type(torch.float32)
+        
+        return fastswish_grad.apply(x)
 
 
 class FastSwish(nn.Module):
@@ -50,6 +139,7 @@ class CXBlock(nn.Module):
             #nn.GELU(approximate='tanh'),
             nn.ReLU(),
             #nn.Hardswish(),
+            #FastSwishCustomGrad(),
             #FastSwish(),
             #nn.SiLU(),
             nn.Conv2d(4 * dim, dim, kernel_size=1, padding='same'),
