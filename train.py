@@ -13,7 +13,7 @@ from torch.profiler import profile, record_function, ProfilerActivity
 
 from utils import prepare_val_folder, load_dataset, count_parameters, save_model, func_timer
 from convnext import ConvNext
-
+from fastswish import FastSwish
 
 # enable use of gpu tensor cores (only relevant in double precision)
 torch.set_float32_matmul_precision('high')
@@ -30,7 +30,7 @@ class Params():
     num_workers = 16
     prefetch_factor = 4
 
-    torch_compile = True
+    torch_compile = False
     inf_batch_size = 1
     mixed_precision = True
 
@@ -93,13 +93,19 @@ def train_model(model, train_data, params):
 
 def export_onnx_graph(model, params):
     x = torch.rand((1, 3, 224, 224), dtype=torch.float32)
-    torch.onnx.export(model, x, f=str(params.artifacts_path / "model_train.onnx"), training=torch.onnx.TrainingMode.TRAINING, do_constant_folding=False)
+
+    # regular export
+    torch.onnx.export(model, x, f=str(params.artifacts_path / "model.onnx"),
+                      training=torch.onnx.TrainingMode.TRAINING,
+                      do_constant_folding=False,
+                      export_modules_as_functions={FastSwish})
     
-    with warnings.catch_warnings(): # ignore opset 18 warning
-        warnings.simplefilter("ignore")
-        export_output = torch.onnx.dynamo_export(model, x)
+    # dynamo export, doesn't work with previous `export_modules_as_functions`
+    # with warnings.catch_warnings(): # ignore opset 18 warning
+    #    warnings.simplefilter("ignore")
+    #    export_output = torch.onnx.dynamo_export(model, x)
     
-    export_output.save(str(params.artifacts_path / "model_dynamo.onnx"))
+    # export_output.save(str(params.artifacts_path / "model_dynamo.onnx"))
 
 
 def measure_training(model, params):
