@@ -3,6 +3,7 @@ from pathlib import Path
 from dataclasses import dataclass
 import warnings
 from time import time
+import copy
 
 import torch
 import torch.nn as nn
@@ -30,7 +31,7 @@ class Params():
     num_workers = 16
     prefetch_factor = 4
 
-    torch_compile = False
+    torch_compile = True
     inf_batch_size = 1
     mixed_precision = True
 
@@ -95,17 +96,19 @@ def export_onnx_graph(model, params):
     x = torch.rand((1, 3, 224, 224), dtype=torch.float32)
 
     # regular export
-    torch.onnx.export(model, x, f=str(params.artifacts_path / "model.onnx"),
+    # copy to avoid interference with dynamo export and later `torch.compile`
+    model_onnx = copy.deepcopy(model)
+    torch.onnx.export(model_onnx, x, f=str(params.artifacts_path / "model.onnx"),
                       training=torch.onnx.TrainingMode.TRAINING,
                       do_constant_folding=False,
                       export_modules_as_functions={FastSwish})
     
-    # dynamo export, doesn't work with previous `export_modules_as_functions`
-    # with warnings.catch_warnings(): # ignore opset 18 warning
-    #    warnings.simplefilter("ignore")
-    #    export_output = torch.onnx.dynamo_export(model, x)
-    
-    # export_output.save(str(params.artifacts_path / "model_dynamo.onnx"))
+    # dynamo export doesn't work with previous `export_modules_as_functions`
+    model_onnx_dynamo = copy.deepcopy(model)
+    with warnings.catch_warnings(): # ignore opset 18 warning
+       warnings.simplefilter("ignore")
+       export_output = torch.onnx.dynamo_export(model_onnx_dynamo, x)
+    export_output.save(str(params.artifacts_path / "model_dynamo.onnx"))
 
 
 def measure_training(model, params):
