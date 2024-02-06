@@ -1,6 +1,7 @@
 import torch.nn as nn
 
 from fastswish import FastSwish
+from fastswish_custom_grad import FastSwishCustomGrad
 
 
 def to_pair(x):
@@ -18,10 +19,10 @@ class CXBlock(nn.Module):
             nn.LayerNorm([4 * dim, h, w]),
             nn.Conv2d(4 * dim, 4 * dim, kernel_size=1, padding='same'),
             #nn.GELU(approximate='tanh'),
-            nn.ReLU(),
+            #nn.ReLU(),
             #nn.Hardswish(),
             #FastSwishCustomGrad(),
-            #FastSwish(),
+            FastSwish(),
             #nn.SiLU(),
             nn.Conv2d(4 * dim, dim, kernel_size=1, padding='same'),
         ]

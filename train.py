@@ -15,6 +15,7 @@ from torch.profiler import profile, record_function, ProfilerActivity
 from utils import prepare_val_folder, load_dataset, count_parameters, save_model, func_timer
 from convnext import ConvNext
 from fastswish import FastSwish
+from fastswish_custom_grad import FastSwishCustomGrad
 
 # enable use of gpu tensor cores (only relevant in double precision)
 torch.set_float32_matmul_precision('high')
@@ -101,7 +102,7 @@ def export_onnx_graph(model, params):
     torch.onnx.export(model_onnx, x, f=str(params.artifacts_path / "model.onnx"),
                       training=torch.onnx.TrainingMode.TRAINING,
                       do_constant_folding=False,
-                      export_modules_as_functions={FastSwish})
+                      export_modules_as_functions={FastSwish, FastSwishCustomGrad})
     
     # dynamo export doesn't work with previous `export_modules_as_functions`
     model_onnx_dynamo = copy.deepcopy(model)

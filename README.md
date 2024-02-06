@@ -49,7 +49,7 @@ Unsurprisingly, also at inference the compiled version of the model is much fast
 
 ### Custom FastSwish Activation
 
-To see how these optimizations work with a custom activation function, I came up with `FastSwish`. It is very similar to `HardSwish`, but with one theoretical improvement: For `x < -3` it is only approaching zero, but doesn't reach it. This means at no point of the function the gradient is dying like in `HardSwish` or `ReLU`. The function looks like this:
+To see how these optimizations work with a custom activation function, I came up with `FastSwish`. It is very similar to `HardSwish`, but with one theoretical improvement: For `x < -3` it is only approaching zero, but doesn't reach it. This means at no point of the function the gradient is dying like with `HardSwish` or `ReLU`. The function looks like this:
 
 ![FastSwish vs HardSwish](fastswish.png)
 
@@ -60,7 +60,13 @@ Classification accuracy 0.4414
 Self CPU time total: 16.110ms
 Self CUDA time total: 6.449ms
 
-Training the model with `FastSwish` achieved a validation accuracy of 0f 44.14%, but it is significantly slower.
+Training the model with `FastSwish` achieved a validation accuracy of 0f 44.14%. But it consumes much more VRAM and is significantly slower than built-in activations. For example, using `ReLU` during training the used VRAM 6 GB, but with `FastSwish` it increases to 11.7 GB. A possible explanation for this is the complicated computational graph for this activation:
+
+![FastSwish Graph](fastswish_graph.png)
+
+The backpropagation through many of these involved operations requries the autograd engine to store activations from the forward pass. To reduce this issue, I implemented a custom backward function for the `FastSwish`, such that only those values are stored that I know will be needed. This reduced the required VRAM during training to 9.1 GB VRAM. However, implementing `FastSwish` with a custom backward function comes with other problems, for example the compilation with `torch.compile` and ONNX export with `torch.onnx.dynamo_export` is more problematic.
+
+#### FastSwish Inference
 
 
 ## Inference (TensorRT)
