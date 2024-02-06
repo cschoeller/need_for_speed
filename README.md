@@ -37,11 +37,11 @@ At first we compare possible inference speeds while staying only in the PyTorch 
 | Changes | Time BS 64 | Time BS 1 | Val Accuracy |
 | -------- | -------- | -------- | -------- |
 | Vanilla | 60.8 ms | 14.11 ms | 46.53 % |
-| TC | 57.31 | 5.44 | 46.16 % |
-| HardSwish | 61.63 | 13.62 | 44.32 % |
-| TC + HardSwish| 54.31 | 5.26 | 43.84 % |
-| ReLU | 62.42 | 13.39 | 46.32 % |
-| TC + ReLU | 46.78 | 5.17 | 46.51 % |
+| TC | 57.31 ms | 5.44 ms | 46.16 % |
+| HardSwish | 61.63 ms | 13.62 ms | 44.32 % |
+| TC + HardSwish| 54.31 ms | 5.26 ms | 43.84 % |
+| ReLU | 62.42 ms | 13.39 ms | 46.32 % |
+| TC + ReLU | 46.78 ms | 5.17 ms | 46.51 % |
 
 TC = torch.compile, BS = Batch Size
 
@@ -53,13 +53,6 @@ To see how these optimizations work with a custom activation function, I came up
 
 ![FastSwish vs HardSwish](fastswish.png)
 
-FastSwish:
-Time per train epoch: 258.7733
-<evaluate> run time: 10.0130 s
-Classification accuracy 0.4414
-Self CPU time total: 16.110ms
-Self CUDA time total: 6.449ms
-
 Training the model with `FastSwish` achieved a validation accuracy of 0f 44.14%. But it consumes much more VRAM and is significantly slower than built-in activations. For example, using `ReLU` during training the used VRAM 6 GB, but with `FastSwish` it increases to 11.7 GB. A possible explanation for this is the complicated computational graph for this activation:
 
 ![FastSwish Graph](fastswish_graph.png)
@@ -67,6 +60,17 @@ Training the model with `FastSwish` achieved a validation accuracy of 0f 44.14%.
 The backpropagation through many of these involved operations requries the autograd engine to store activations from the forward pass. To reduce this issue, I implemented a custom backward function for the `FastSwish`, such that only those values are stored that I know will be needed. This reduced the required VRAM during training to 9.1 GB VRAM. However, implementing `FastSwish` with a custom backward function comes with other problems, for example the compilation with `torch.compile` and ONNX export with `torch.onnx.dynamo_export` is more problematic.
 
 #### FastSwish Inference
+
+Using FastSwish, the torch inference times are:
+
+| Changes | Time BS 64 | Time BS 1 |
+| -------- | -------- | -------- |
+| FastSwish | 98.86 ms | 19.97 ms |
+| TC + FastSwish | 86.04 ms | 29.32 ms |
+
+Surprisingly, in this case compiling the model with `torch.compile` didn't yield any improvements for batch size 1 and only a moderate improvement for batch size 64. Also explicitly wrapping the `FastSwish` activation into a `@torch.compile` or `@torch.jit.script` did not have any impact. Perhaps, the optimization strategies of torch inductor are not flexible enough to do meaningful kernel fusion and other optimizations with such a custom function to compute. But it could also be that the particular expressions used in `FastSwish` are not well suited for kernel generation (especially the piece-wise definition). In fact, comparing the resulting operations listed in our runtime analysis, the model using `ReLU` activations contains drastically more auto-generated - triton compiled - kernels than the model with `FastSwish`.
+
+One way to speed up inference could be to explicitly write a cuda or trition kernel for `FastSwish`. However, probably also other inference engines that aim to optimize via common fusion patterns would struggle with that.
 
 
 ## Inference (TensorRT)
