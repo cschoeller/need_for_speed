@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import warnings
 from time import time
 import copy
+from enum import Enum, auto
 
 import torch
 import torch.nn as nn
@@ -21,9 +22,15 @@ from fastswish_custom_grad import FastSwishCustomGrad
 torch.set_float32_matmul_precision('high')
 
 
+class CompMode(Enum):
+    DEFAULT = auto()
+    COMPILE = auto()
+    SCRIPT = auto()
+
+
 @dataclass
 class Params():
-    epochs = 30
+    epochs = 1 #30
     lr = 0.0003
     train_batch_size = 128
     val_batch_size = 32
@@ -32,7 +39,8 @@ class Params():
     num_workers = 16
     prefetch_factor = 4
 
-    torch_compile = True
+    compile_mode = CompMode.COMPILE
+    tensorrt_inference = False
     inf_batch_size = 1
     mixed_precision = True
 
@@ -126,6 +134,14 @@ def measure_training(model, params):
     save_model(model, params.artifacts_path / 'model.pt')
 
 
+def compile_model(model, params: Params):
+    if params.compile_mode == CompMode.COMPILE: # torch inductor backend
+        model = torch.compile(model, dynamic=True)
+    elif params.compile_mode == CompMode.SCRIPT: # torchscript backend
+        model = torch.jit.script(model)
+    return model
+
+
 def evaluate_inference(model, params):
     model.cuda()
     model.eval()
@@ -140,6 +156,10 @@ def evaluate_inference(model, params):
 
     print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
     prof.export_chrome_trace(str(params.artifacts_path / "trace.json"))
+
+
+def evaluate_tensorrt_inference(params: Params):
+    pass
 
 
 def main():
@@ -161,16 +181,16 @@ def main():
     # Exporting with dynamo_export probably only optimizes the graph in a ONNX-compatible way.
     export_onnx_graph(model, params)
 
-    # jit optimization for faster inference with torch (inductor) backend
-    if params.torch_compile:
-        # NOTE:  Using cudagraphs lets PyTorch execute multiple kernels via one CPU submit.
-        model = torch.compile(model, dynamic=True)#, options={"triton.cudagraphs": True})
+    compiled_model = compile_model(model, params)
        
     # train model and measure time
-    measure_training(model, params)
+    #measure_training(compiled_model, params)
 
     # evaluate inference runtime
-    evaluate_inference(model, params)
+    if params.tensorrt_inference:
+        evaluate_tensorrt_inference(params)
+    else:
+        evaluate_inference(compiled_model, params)
 
 
 if __name__ == "__main__":
