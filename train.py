@@ -12,6 +12,7 @@ import torch.optim as optim
 import torch.utils.data as data
 from torch.cuda.amp import GradScaler
 from torch.profiler import profile, record_function, ProfilerActivity
+import torch_tensorrt
 
 from utils import prepare_val_folder, load_dataset, count_parameters, save_model, func_timer
 from convnext import ConvNext
@@ -26,11 +27,12 @@ class CompMode(Enum):
     DEFAULT = auto()
     COMPILE = auto()
     SCRIPT = auto()
+    TENSORRT = auto()
 
 
 @dataclass
 class Params():
-    epochs = 1 #30
+    epochs = 30
     lr = 0.0003
     train_batch_size = 128
     val_batch_size = 32
@@ -39,8 +41,8 @@ class Params():
     num_workers = 16
     prefetch_factor = 4
 
-    compile_mode = CompMode.COMPILE
-    tensorrt_inference = False
+    train_mode = CompMode.COMPILE
+    inf_mode = CompMode.TENSORRT
     inf_batch_size = 1
     mixed_precision = True
 
@@ -134,32 +136,66 @@ def measure_training(model, params):
     save_model(model, params.artifacts_path / 'model.pt')
 
 
-def compile_model(model, params: Params):
-    if params.compile_mode == CompMode.COMPILE: # torch inductor backend
+def compile_model(model, compile_mode, params: Params):
+    if compile_mode == CompMode.COMPILE: # torch inductor backend
         model = torch.compile(model, dynamic=True)
-    elif params.compile_mode == CompMode.SCRIPT: # torchscript backend
+    elif compile_mode == CompMode.SCRIPT: # torchscript backend
         model = torch.jit.script(model)
+    elif compile_mode == CompMode.TENSORRT: # torchscript backend
+        model = compile_to_tensorrt(model, params)
     return model
 
 
 def evaluate_inference(model, params):
-    model.cuda()
-    model.eval()
-    input_1 = torch.rand(size=(params.inf_batch_size, 3, 224, 224), device="cuda")
-    model(input_1)
+    if params.inf_mode is not CompMode.TENSORRT:
+        model.cuda()
+        model.eval()
+
+    if params.inf_mode is CompMode.COMPILE:
+        input_1 = torch.rand(size=(params.inf_batch_size, 3, 224, 224), device="cuda")
+        model(input_1)
 
     input_2 = torch.rand(size=(params.inf_batch_size, 3, 224, 224), device="cuda")
     with profile(activities=[
         ProfilerActivity.CPU, ProfilerActivity.CUDA], with_stack=True) as prof:
         with record_function("model_inference"):
+                if params.mixed_precision:
+                    input_2 = input_2.half()
                 model(input_2)
 
     print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
     prof.export_chrome_trace(str(params.artifacts_path / "trace.json"))
 
 
-def evaluate_tensorrt_inference(params: Params):
-    pass
+def compile_to_tensorrt(model, params: Params):
+    """
+    For simplicity we use torch_tensorrt to convert to TRT instead of
+    going through the ONNX export.
+    """
+
+    model.cuda()
+    model.eval()
+
+    input_definition = [
+        torch_tensorrt.Input(
+            shape=(params.inf_batch_size, 3, 224, 224),
+            dtype=torch.half if params.mixed_precision else torch.float,
+        )
+    ]
+    enabled_precisions = {torch.float, torch.half}  # Run with fp16
+    input_data = torch.rand(size=(params.inf_batch_size, 3, 224, 224), device="cuda")
+
+    if params.mixed_precision:
+        model.half()
+        input_data.half()
+
+    trt_model = torch_tensorrt.compile(
+        model, inputs=input_definition, enabled_precisions=enabled_precisions
+    )
+    trt_exp_program = torch_tensorrt.dynamo.export(trt_model, input_data, output_format="fx")
+    torch.export.save(trt_exp_program, params.artifacts_path / "trt_model.fx")
+
+    return trt_model
 
 
 def main():
@@ -181,16 +217,15 @@ def main():
     # Exporting with dynamo_export probably only optimizes the graph in a ONNX-compatible way.
     export_onnx_graph(model, params)
 
-    compiled_model = compile_model(model, params)
+    train_model = model
+    if params.train_mode is not CompMode.TENSORRT:
+        train_model = compile_model(model, params.train_mode, params)
        
     # train model and measure time
-    #measure_training(compiled_model, params)
+    measure_training(train_model, params)
 
-    # evaluate inference runtime
-    if params.tensorrt_inference:
-        evaluate_tensorrt_inference(params)
-    else:
-        evaluate_inference(compiled_model, params)
+    inf_model = compile_model(model, params.inf_mode, params)
+    evaluate_inference(inf_model, params)
 
 
 if __name__ == "__main__":
