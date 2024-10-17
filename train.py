@@ -9,10 +9,13 @@ from enum import Enum, auto
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.utils
 import torch.utils.data as data
 from torch.cuda.amp import GradScaler
 from torch.profiler import profile, record_function, ProfilerActivity
-import torch_tensorrt
+import torch.utils.data
+#import torch_tensorrt
+import modelopt.torch.quantization as mtq
 
 from utils import prepare_val_folder, load_dataset, count_parameters, save_model, func_timer
 from convnext import ConvNext
@@ -32,7 +35,7 @@ class CompMode(Enum):
 
 @dataclass
 class Params():
-    epochs = 30
+    epochs = 2
     lr = 0.0003
     train_batch_size = 128
     val_batch_size = 32
@@ -112,6 +115,7 @@ def export_onnx_graph(model, params):
     torch.onnx.export(model_onnx, x, f=str(params.artifacts_path / "model.onnx"),
                       training=torch.onnx.TrainingMode.TRAINING,
                       do_constant_folding=False,
+                      export_params=True,
                       export_modules_as_functions={FastSwish, FastSwishCustomGrad})
     
     # dynamo export doesn't work with previous `export_modules_as_functions`
@@ -141,8 +145,8 @@ def compile_model(model, compile_mode, params: Params):
         model = torch.compile(model, dynamic=True)
     elif compile_mode == CompMode.SCRIPT: # torchscript backend
         model = torch.jit.script(model)
-    elif compile_mode == CompMode.TENSORRT: # torchscript backend
-        model = compile_to_tensorrt(model, params)
+    # elif compile_mode == CompMode.TENSORRT: # torchscript backend
+    #     model = compile_to_tensorrt(model, params)
     return model
 
 
@@ -167,35 +171,79 @@ def evaluate_inference(model, params):
     prof.export_chrome_trace(str(params.artifacts_path / "trace.json"))
 
 
-def compile_to_tensorrt(model, params: Params):
+# def compile_to_tensorrt(model, params: Params):
+#     """
+#     For simplicity we use torch_tensorrt to convert to TRT instead of
+#     going through the ONNX export.
+#     """
+
+#     model.cuda()
+#     model.eval()
+
+#     input_definition = [
+#         torch_tensorrt.Input(
+#             shape=(params.inf_batch_size, 3, 224, 224),
+#             dtype=torch.half if params.mixed_precision else torch.float,
+#         )
+#     ]
+#     enabled_precisions = {torch.float, torch.half}  # Run with fp16
+#     input_data = torch.rand(size=(params.inf_batch_size, 3, 224, 224), device="cuda")
+
+#     if params.mixed_precision:
+#         model.half()
+#         input_data.half()
+
+#     trt_model = torch_tensorrt.compile(
+#         model, inputs=input_definition, enabled_precisions=enabled_precisions
+#     )
+#     trt_exp_program = torch_tensorrt.dynamo.export(trt_model, input_data, output_format="fx")
+#     torch.export.save(trt_exp_program, params.artifacts_path / "trt_model.fx")
+
+#     return trt_model
+
+
+def quantize_with_torch(model_fp32, params):
+    """Quantizes a given torch model with tensorrt.
+    
+    See: https://nvidia.github.io/TensorRT-Model-Optimizer/index.html
     """
-    For simplicity we use torch_tensorrt to convert to TRT instead of
-    going through the ONNX export.
-    """
+    _, val = load_dataset(params.dataset_path)
+    calib_set = data.DataLoader(val, batch_size=params.train_batch_size, shuffle=True,
+                                num_workers=params.num_workers, prefetch_factor=params.prefetch_factor,
+                                pin_memory=False)
 
-    model.cuda()
-    model.eval()
+    # Select the quantization config, for example, INT8 Smooth Quant
+    config = mtq.INT8_SMOOTHQUANT_CFG
 
-    input_definition = [
-        torch_tensorrt.Input(
-            shape=(params.inf_batch_size, 3, 224, 224),
-            dtype=torch.half if params.mixed_precision else torch.float,
-        )
-    ]
-    enabled_precisions = {torch.float, torch.half}  # Run with fp16
-    input_data = torch.rand(size=(params.inf_batch_size, 3, 224, 224), device="cuda")
+    # Prepare the calibration set and define a forward loop
+    def forward_loop(model):
+        for i, (sample, _) in enumerate(calib_set):
+            sample.cuda()
+            if i > 15:
+                break
+            model(sample)
 
-    if params.mixed_precision:
-        model.half()
-        input_data.half()
+    # PTQ with in-place replacement to quantized modules
+    model_int8 = mtq.quantize(model_fp32, config, forward_loop)
 
-    trt_model = torch_tensorrt.compile(
-        model, inputs=input_definition, enabled_precisions=enabled_precisions
-    )
-    trt_exp_program = torch_tensorrt.dynamo.export(trt_model, input_data, output_format="fx")
-    torch.export.save(trt_exp_program, params.artifacts_path / "trt_model.fx")
+    for sample, _ in calib_set:
+        print(sample.device)
 
-    return trt_model
+        for name, param in model_int8.named_parameters():
+            if param.requires_grad:
+                print(param)
+        # model_int8(sample)
+        break
+
+    # # Evaluate runtime on cpu, as cuda doesn't support int8
+    # dummy_input = torch.rand(size=(params.inf_batch_size, 3, 224, 224))
+    # with profile(activities=[
+    #     ProfilerActivity.CPU, ProfilerActivity.CPU], with_stack=True) as prof:
+    #     with record_function("model_inference"):
+    #             model_fp32(dummy_input)
+
+    # print(prof.key_averages().table(row_limit=10))
+
 
 
 def main():
@@ -212,20 +260,23 @@ def main():
     model = ConvNext(img_size=224, num_classes=200, channels=(64, 96, 128, 256))
     print(f"Number of model parameters: {count_parameters(model)/10e5:.2f} mil")
 
-    # NOTE: We export before compilation to avoid errors. My guess is that Trition is generating
-    # custom symbols and JIT compiled kernels that are not compatiable with the ONNX opset.
-    # Exporting with dynamo_export probably only optimizes the graph in a ONNX-compatible way.
-    export_onnx_graph(model, params)
-
     train_model = model
     if params.train_mode is not CompMode.TENSORRT:
         train_model = compile_model(model, params.train_mode, params)
+
+    # NOTE: We export the original uncompiled version as it converts well to the ONNX opset. Exporting
+    # the compiled model would lead to errors. dynamo_export probably only optimizes the graph in
+    # an ONNX-compatible way.
+    #print("Exportin onnx graphs...")
+    #export_onnx_graph(model, params)
        
     # train model and measure time
-    measure_training(train_model, params)
+    #measure_training(train_model, params)
 
     inf_model = compile_model(model, params.inf_mode, params)
-    evaluate_inference(inf_model, params)
+    #evaluate_inference(inf_model, params)
+
+    quantize_with_torch(model, params)
 
 
 if __name__ == "__main__":
