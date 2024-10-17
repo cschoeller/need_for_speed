@@ -87,9 +87,3 @@ conda activate <env-name>
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
-
-
-# Next Steps
-
-- Inference with TensorRT
-- Quantization / QAT

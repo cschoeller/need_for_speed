@@ -104,7 +104,7 @@ def train_model(model, train_data, params):
 
 
 def export_onnx_graph(model, params):
-    x = torch.rand((1, 3, 224, 224), dtype=torch.float32)
+    x = torch.rand((1, 3, 224, 224), dtype=torch.float32, device='cuda')
 
     # regular export
     # copy to avoid interference with dynamo export and later `torch.compile`
@@ -112,6 +112,7 @@ def export_onnx_graph(model, params):
     torch.onnx.export(model_onnx, x, f=str(params.artifacts_path / "model.onnx"),
                       training=torch.onnx.TrainingMode.TRAINING,
                       do_constant_folding=False,
+                      export_params=True,
                       export_modules_as_functions={FastSwish, FastSwishCustomGrad})
     
     # dynamo export doesn't work with previous `export_modules_as_functions`
@@ -199,6 +200,15 @@ def compile_to_tensorrt(model, params: Params):
 
 
 def main():
+    """Test various ways of compiling, benchmarking, and exporting models.
+    
+    NOTE: Originally I also wanted to quantize to int8, but the torch native quantization requires
+    to add manual quant nodes. I also tested some other python / torch-based methods like here
+    https://github.com/NVIDIA/TensorRT-Model-Optimizer, this but had issues executing the model
+    in python (possibly because the default cuda backend doesn't support int8 execution?). The most
+    common and reliable way is probably to take one of the ONNX exports and quantize directly with
+    TensorRT, but I skip this exercise for now.
+    """
     params = Params()
     params.artifacts_path = Path(params.artifacts_path)
 
@@ -212,17 +222,17 @@ def main():
     model = ConvNext(img_size=224, num_classes=200, channels=(64, 96, 128, 256))
     print(f"Number of model parameters: {count_parameters(model)/10e5:.2f} mil")
 
-    # NOTE: We export before compilation to avoid errors. My guess is that Trition is generating
-    # custom symbols and JIT compiled kernels that are not compatiable with the ONNX opset.
-    # Exporting with dynamo_export probably only optimizes the graph in a ONNX-compatible way.
-    export_onnx_graph(model, params)
-
     train_model = model
     if params.train_mode is not CompMode.TENSORRT:
         train_model = compile_model(model, params.train_mode, params)
        
     # train model and measure time
     measure_training(train_model, params)
+
+    # Export with the original model after compliation. As weights are shared the
+    # correct weights will be exported as well. Exporting with dynamo_export probably
+    # only optimizes the graph in a ONNX-compatible way.
+    export_onnx_graph(model, params)
 
     inf_model = compile_model(model, params.inf_mode, params)
     evaluate_inference(inf_model, params)
